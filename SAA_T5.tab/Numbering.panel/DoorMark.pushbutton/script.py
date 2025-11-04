@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
 __title__ = "Door\nMark"
 __author__ = "JK_Sim"
-__doc__ = """Version = 1.4
-Date    = 31.10.2025
+__doc__ = """Version = 1.6
+Date    = 02.11.2025
 _____________________________________________________________________
 Description:
 
 Fill in Door parameter "Mark" and "ELEMENT_ROOM ALLOCATION"
 from Room "Number" and "Name", including linked rooms.
 
+Doors are sorted in two groups based on angle:
+  • Group 1 (Top/Bottom sides): clockwise
+  • Group 2 (Left/Right sides): anti-clockwise
+Reference center is the room centroid.
 _____________________________________________________________________
 How-to:
 
@@ -21,7 +25,7 @@ _____________________________________________________________________
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.UI.Selection import ObjectType
 from pyrevit import revit, forms, script
-from System import Guid
+import math
 
 doc = revit.doc
 uidoc = revit.uidoc
@@ -41,7 +45,6 @@ room = None
 for el in selected:
     if el.Category and el.Category.Id.IntegerValue == int(BuiltInCategory.OST_Doors):
         doors.append(el)
-
     elif el.Category and el.Category.Id.IntegerValue == int(BuiltInCategory.OST_Rooms):
         room = el
 
@@ -53,7 +56,6 @@ if not room:
             if isinstance(link_inst, RevitLinkInstance):
                 link_doc = link_inst.GetLinkDocument()
                 linked_elem = link_doc.GetElement(ref.LinkedElementId)
-
                 if linked_elem.Category and linked_elem.Category.Id.IntegerValue == int(BuiltInCategory.OST_Rooms):
                     room = linked_elem
                     break
@@ -81,24 +83,43 @@ if not room_num or not room_name:
     forms.alert("Room Number or Name is empty.")
     script.exit()
 
-# ------------------------------------- SORT DOORS
-def get_center(elem):
-    loc = elem.Location
-    if isinstance(loc, LocationPoint):
-        pt = loc.Point
-        return pt.X, pt.Y
-    return None
-
-door_centers = [(d, get_center(d)) for d in doors]
-door_centers = [dc for dc in door_centers if dc[1] is not None]
-
-if len(door_centers) != len(doors):
-    forms.alert("Some doors have no location point.")
+# ------------------------------------- CENTER FROM ROOM CENTROID
+room_loc = room.Location
+bbox = room.get_BoundingBox(None)
+if bbox:
+    center = (bbox.Min + bbox.Max) / 2.0
+else:
+    forms.alert("Cannot determine room center.")
     script.exit()
 
-# Sort by Y (top to bottom), then X (left to right)
-door_centers.sort(key=lambda x: (-x[1][1], x[1][0]))
-sorted_doors = [dc[0] for dc in door_centers]
+# ------------------------------------- CLOCKWISE + ANTICLOCKWISE GROUP SORT
+def compute_angle(center, pt):
+    dx = pt.X - center.X
+    dy = pt.Y - center.Y
+    angle = math.degrees(math.atan2(dy, dx))
+    angle = (360 - angle + 360) % 360     # Clockwise
+    angle = (angle - 315) % 360           # Top-left = 0
+    return angle
+
+group1 = []  # Horizontal (top/bottom)
+group2 = []  # Vertical (left/right)
+
+for door in doors:
+    loc = door.Location
+    if isinstance(loc, LocationPoint):
+        pt = loc.Point
+        angle = compute_angle(center, pt)
+        if angle < 135 or angle >= 315:
+            group1.append((door, angle))
+        else:
+            group2.append((door, angle))
+
+# Sort each group separately
+group1_sorted = sorted(group1, key=lambda d: d[1])     # clockwise
+group2_sorted = sorted(group2, key=lambda d: -d[1])    # anti-clockwise
+
+# Merge final order
+sorted_doors = [d[0] for d in group1_sorted + group2_sorted]
 
 # ------------------------------------- ASSIGN VALUES
 with Transaction(doc, "Door Mark from Room") as t:
@@ -111,6 +132,7 @@ with Transaction(doc, "Door Mark from Room") as t:
 
         mark = room_num + ALPHABET[i]
 
+        # Assign parameters
         p_mark = door.LookupParameter("Mark")
         if p_mark and not p_mark.IsReadOnly:
             p_mark.Set(mark)
