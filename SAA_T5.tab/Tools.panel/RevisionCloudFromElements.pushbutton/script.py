@@ -415,5 +415,14 @@ if first_start and prev_end:
 
 with Transaction(doc, "Create Revision Cloud (Selection)") as t:
     t.Start()
-    RevisionCloud.Create(doc, sheet_view, revision.Id, curves)
+    cloud = RevisionCloud.Create(doc, sheet_view, revision.Id, curves)
+    # assign "SAA" to Comments parameter if available
+    try:
+        param = cloud.LookupParameter("Comments")
+        if param and not param.IsReadOnly:
+            param.Set("SAA")
+        else:
+            cloud.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS).Set("SAA")
+    except:
+        pass
     t.Commit()
