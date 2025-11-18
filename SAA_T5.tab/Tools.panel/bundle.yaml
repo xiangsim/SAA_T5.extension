@@ -1,0 +1,4 @@
+layout:
+  - RevisionCloudFromElements
+  - MergeRevisionClouds
+  - TransferSingle
