@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-__title__ = "RoomChangeLevel"
+__title__ = "Room\nChangeLevel"
 __author__ = "JK_Sim"
 __doc__ = """Version = 2.1
 Date    = 04.12.2025
