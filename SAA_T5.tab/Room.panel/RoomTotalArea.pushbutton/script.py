@@ -1,89 +1,86 @@
 # -*- coding: utf-8 -*-
 __title__ = "Total\nArea"
 __author__ = "JK_Sim"
-__doc__ = """Version = 1.0
+__doc__ = """Version = 6.0
 Date    = 11.12.2025
 Description:
 Calculates total area of selected rooms.
-Supports:
-1. Native Rooms (Pre-selected).
-2. Linked Rooms (Calculates all rooms in selected Link Instance).
+- Seamlessly handles Native Rooms and Linked Rooms.
+- No pop-ups or confirmations.
+- Uses Reference selection to identify specific linked rooms.
 """
 
-from pyrevit import revit, DB, forms
 from Autodesk.Revit.DB import (
-    FilteredElementCollector, BuiltInCategory, 
-    SpatialElement, RevitLinkInstance, ElementId
+    BuiltInCategory, ElementId, RevitLinkInstance, SpatialElement
 )
-import sys
+from pyrevit import revit, forms, script
 
-# ---------------- Helpers ----------------
-def to_sqm(sqft_value):
-    """Converts internal sqft to sqm."""
-    return sqft_value * 0.09290304
+# ---------------- INITIALIZATION ----------------
+doc = revit.doc
+uidoc = revit.uidoc
 
-def get_room_area(element):
-    """Safely gets area from a Room element."""
-    # Check if element is a Room (SpatialElement)
-    if hasattr(element, "Area"):
+# ---------------- HELPERS ----------------
+def get_internal_area(element):
+    """Safely returns area if element is a placed room."""
+    if hasattr(element, "Area") and element.Area > 0:
         return element.Area
     return 0.0
 
-# ---------------- MAIN ----------------
-doc = __revit__.ActiveUIDocument.Document
-uidoc = __revit__.ActiveUIDocument
+def to_sqm(sqft):
+    return sqft * 0.09290304
 
-# 1. Get Selection
-sel_ids = uidoc.Selection.GetElementIds()
+# ---------------- MAIN LOGIC ----------------
 
-if not sel_ids:
-    forms.alert("Please select Room(s) or Link(s) first.", exitscript=True)
+# We use GetReferences() instead of GetElementIds()
+# This is crucial because it contains the 'LinkedElementId'
+sel_refs = uidoc.Selection.GetReferences()
 
-valid_rooms = []
-total_area_internal = 0.0
-processed_count = 0
+if not sel_refs:
+    forms.alert("Please select Room(s) first.", exitscript=True)
 
-# 2. Iterate Selection
-for i in sel_ids:
-    e = doc.GetElement(i)
-    
-    # CASE A: Native Room
-    if isinstance(e, DB.Architecture.Room):
-        if e.Area > 0:
-            total_area_internal += e.Area
-            processed_count += 1
+total_area_sqft = 0.0
+room_count = 0
+
+# Iterate through every picked object reference
+for ref in sel_refs:
+    element = None
+
+    # --- CASE A: Linked Element (Tab-Selected) ---
+    if ref.LinkedElementId != ElementId.InvalidElementId:
+        link_inst = doc.GetElement(ref.ElementId)
+        if isinstance(link_inst, RevitLinkInstance):
+            link_doc = link_inst.GetLinkDocument()
+            if link_doc:
+                element = link_doc.GetElement(ref.LinkedElementId)
+
+    # --- CASE B: Native Element (Direct Select) ---
+    else:
+        element = doc.GetElement(ref.ElementId)
+
+    # --- PROCESS THE ELEMENT ---
+    # We treat both exactly the same now
+    if element and isinstance(element, SpatialElement):
+        if element.Category and element.Category.Id.IntegerValue == int(BuiltInCategory.OST_Rooms):
+            area = get_internal_area(element)
             
-    # CASE B: Revit Link Instance
-    # (If a link is selected, we calculate rooms inside it)
-    elif isinstance(e, RevitLinkInstance):
-        link_doc = e.GetLinkDocument()
-        if link_doc:
-            # Collect all rooms in the linked document
-            # Note: We collect 'SpatialElement' to catch Rooms/Areas
-            collector = FilteredElementCollector(link_doc)\
-                        .OfCategory(BuiltInCategory.OST_Rooms)\
-                        .WhereElementIsNotElementType()\
-                        .ToElements()
-            
-            for linked_room in collector:
-                if linked_room.Area > 0:
-                    total_area_internal += linked_room.Area
-                    processed_count += 1
+            # Add to total if valid
+            if area > 0:
+                total_area_sqft += area
+                room_count += 1
 
-# 3. Validation & Output
-if processed_count == 0:
-    forms.alert("No placed rooms found in selection.\n(Note: Unplaced rooms have 0 Area)", title="Result")
-    sys.exit()
+# ---------------- OUTPUT ----------------
+if room_count == 0:
+    forms.alert("No placed rooms found in selection.", warn_icon=True)
+    script.exit()
 
-# 4. Conversion & Display
-# Revit internal area is always Square Feet
-val_sqft = total_area_internal
-val_sqm = to_sqm(total_area_internal)
+val_sqm = to_sqm(total_area_sqft)
+val_sqft = total_area_sqft
 
-res_msg = "Total Area Calculation:\n\n" \
-          "Count: {} Room(s)\n" \
-          "--------------------------------\n" \
-          "{:.2f} m²\n" \
-          "{:.2f} sqft".format(processed_count, val_sqm, val_sqft)
+msg = "Total Area Calculation\n" \
+      "---------------------------\n" \
+      "Rooms Selected: {}\n" \
+      "---------------------------\n" \
+      "{:.2f} m²\n" \
+      "{:.2f} sqft".format(room_count, val_sqm, val_sqft)
 
-forms.alert(res_msg, title="Total Room Area")
+forms.alert(msg, title="Total Area")
