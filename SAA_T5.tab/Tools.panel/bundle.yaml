@@ -2,5 +2,4 @@ layout:
   - RevisionCloudFromElements
   - MergeRevisionClouds
   - StraightenWall
-  - RoomChangeLevel
   - TransferSingle
