@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-__title__ = "Merge\nRevisionClouds"
+__title__ = "Merge\nClouds"
 __author__ = "JK_Sim"
 __doc__ = """Version 1.0
 Date: 18.11.2025

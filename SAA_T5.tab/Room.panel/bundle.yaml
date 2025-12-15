@@ -1,5 +1,7 @@
 layout:
-  - RoomTotalArea
-  - RoomChangeLevel
   - RoomNumber
   - DoorMark
+  - RoomChangeLevel
+  - RoomTotalArea
+  - RoomToFloor
+  - RoomToCeiling

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-__title__ = "RevisionCloud\nFromElements"
+__title__ = "Revision\nClouds"
 __author__ = "JK_Sim"
 __doc__ = """Version 2.8
 Date: 18.11.2025
