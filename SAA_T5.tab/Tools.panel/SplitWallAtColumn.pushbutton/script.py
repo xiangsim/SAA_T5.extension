@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 __title__ = "Split Wall\nAt Column"
 __author__ = "JK_Sim"
-__doc__ = """Version = 2.6
+__doc__ = """Version = 2.7
 Date    = 16.12.2025
 _____________________________________________________________________
 Description:
 
 Splits selected Walls at Linked Columns.
 
-Fixes in v2.6:
-  • WALL JOINS: Now allows the start/end of the wall chain to join 
-    neighbors, while keeping the cuts at the column disallowed.
-  • PRESERVATION: Retains Tags and Marks on all segments.
-  • GEOMETRY: Uses XYZ-anchoring to ensure segments are full length.
+Fixes in v2.7:
+  • CORNER JOINS: Fixed issue where walls ending in a column (corner condition)
+    would still try to auto-join.
+  • LOGIC UPDATE: Now checks if a wall end is an 'Original End' or a 'Cut Face'.
+    Only 'Original Ends' are allowed to join. All 'Cut Faces' are disallowed.
 _____________________________________________________________________
 """
 
@@ -72,34 +72,33 @@ if not walls or not linked_cols:
 
 # ------------------------------------- HELPER FUNCTIONS
 
-def manage_wall_joins(wall, is_first, is_last):
+def manage_wall_joins_geometric(wall, p_current_start, p_current_end, p_orig_start, p_orig_end):
     """
-    Intelligent Join Management:
-    - Inner Ends (Touching Column) -> Disallow Join (Clean Cut)
-    - Outer Ends (Touching Neighbors) -> Allow Join
+    Decides joins based on geometry, not index.
     """
-    # End 0 = Start, End 1 = End
-    
-    # --- HANDLE START (End 0) ---
-    if is_first:
-        # This is the original wall Start. Allow it to join neighbors.
+    # Tolerance for point comparison
+    tol = 0.001
+
+    # --- START JOIN ---
+    # Allow join ONLY if this start point is the Original Wall's start point
+    if p_current_start.DistanceTo(p_orig_start) < tol:
         if not WallUtils.IsWallJoinAllowedAtEnd(wall, 0):
             try: WallUtils.AllowWallJoinAtEnd(wall, 0)
             except: pass
     else:
-        # This connects to a gap/column. Disallow.
+        # It's a cut point (or gap edge) -> Disallow
         if WallUtils.IsWallJoinAllowedAtEnd(wall, 0):
             try: WallUtils.DisallowWallJoinAtEnd(wall, 0)
             except: pass
 
-    # --- HANDLE END (End 1) ---
-    if is_last:
-        # This is the original wall End. Allow it to join neighbors.
+    # --- END JOIN ---
+    # Allow join ONLY if this end point is the Original Wall's end point
+    if p_current_end.DistanceTo(p_orig_end) < tol:
         if not WallUtils.IsWallJoinAllowedAtEnd(wall, 1):
             try: WallUtils.AllowWallJoinAtEnd(wall, 1)
             except: pass
     else:
-        # This connects to a gap/column. Disallow.
+        # It's a cut point -> Disallow
         if WallUtils.IsWallJoinAllowedAtEnd(wall, 1):
             try: WallUtils.DisallowWallJoinAtEnd(wall, 1)
             except: pass
@@ -169,7 +168,7 @@ def restore_inserts_data(doc, wall, snapshot, view):
                         try:
                             if p_mark.AsString() != data['Mark']: p_mark.Set(data['Mark'])
                         except: pass
-                # Restore Tags (only if new element)
+                # Restore Tags
                 if data['Tags'] and insert.Id != data.get('OrigId', ElementId.InvalidElementId):
                     for t_info in data['Tags']:
                         try:
@@ -278,17 +277,15 @@ with Transaction(doc, "Split Wall At Column") as t:
                 walls_to_update.append((cp, wall_segments[i+1]))
 
         # 7. UPDATE GEOMETRY & JOINS
-        count = len(walls_to_update)
-        for idx, (w_obj, (p1, p2)) in enumerate(walls_to_update):
+        for w_obj, (p1, p2) in walls_to_update:
             try:
                 # Geometry
                 new_curve = Line.CreateBound(p1, p2)
                 w_obj.Location.Curve = new_curve
                 
-                # JOINS: Check if First or Last segment
-                is_first = (idx == 0)
-                is_last  = (idx == count - 1)
-                manage_wall_joins(w_obj, is_first, is_last)
+                # JOINS (New Geometric Logic)
+                # We check: Is p1 the Original Start? Is p2 the Original End?
+                manage_wall_joins_geometric(w_obj, p1, p2, p_start_anchor, p_end_anchor)
 
                 # Data
                 restore_inserts_data(doc, w_obj, master_snapshot, view)
