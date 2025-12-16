@@ -1,18 +1,17 @@
 # -*- coding: utf-8 -*-
 __title__ = "Split Wall\nAt Column"
 __author__ = "JK_Sim"
-__doc__ = """Version = 2.7
+__doc__ = """Version = 3.2
 Date    = 16.12.2025
 _____________________________________________________________________
 Description:
 
-Splits selected Walls at Linked Columns.
+Splits selected Walls at Linked Columns (Silent Mode).
 
-Fixes in v2.7:
-  • CORNER JOINS: Fixed issue where walls ending in a column (corner condition)
-    would still try to auto-join.
-  • LOGIC UPDATE: Now checks if a wall end is an 'Original End' or a 'Cut Face'.
-    Only 'Original Ends' are allowed to join. All 'Cut Faces' are disallowed.
+Fixes in v3.2:
+  • SILL HEIGHT BUG: Fixed issue where doors with Sill Height > 0 
+    were deleted. Changed validation from 3D distance to 2D (XY) distance,
+    so height differences are ignored.
 _____________________________________________________________________
 """
 
@@ -70,35 +69,40 @@ if not walls or not linked_cols:
     forms.alert("Select Walls AND Tab-select Linked Columns.")
     script.exit()
 
+# ------------------------------------- WARNING SUPPRESSION
+
+class WarningSwallower(IFailuresPreprocessor):
+    def PreprocessFailures(self, failuresAccessor):
+        failures = failuresAccessor.GetFailureMessages()
+        if not failures: return FailureProcessingResult.Continue
+        for f in failures:
+            if f.GetSeverity() == FailureSeverity.Warning:
+                failuresAccessor.DeleteWarning(f)
+            elif f.GetSeverity() == FailureSeverity.Error:
+                if failuresAccessor.IsFailureResolutionPermitted(f):
+                    failuresAccessor.ResolveFailure(f)
+                    return FailureProcessingResult.ProceedWithCommit
+        return FailureProcessingResult.Continue
+
 # ------------------------------------- HELPER FUNCTIONS
 
 def manage_wall_joins_geometric(wall, p_current_start, p_current_end, p_orig_start, p_orig_end):
-    """
-    Decides joins based on geometry, not index.
-    """
-    # Tolerance for point comparison
     tol = 0.001
-
-    # --- START JOIN ---
-    # Allow join ONLY if this start point is the Original Wall's start point
+    # Start Point
     if p_current_start.DistanceTo(p_orig_start) < tol:
         if not WallUtils.IsWallJoinAllowedAtEnd(wall, 0):
             try: WallUtils.AllowWallJoinAtEnd(wall, 0)
             except: pass
     else:
-        # It's a cut point (or gap edge) -> Disallow
         if WallUtils.IsWallJoinAllowedAtEnd(wall, 0):
             try: WallUtils.DisallowWallJoinAtEnd(wall, 0)
             except: pass
-
-    # --- END JOIN ---
-    # Allow join ONLY if this end point is the Original Wall's end point
+    # End Point
     if p_current_end.DistanceTo(p_orig_end) < tol:
         if not WallUtils.IsWallJoinAllowedAtEnd(wall, 1):
             try: WallUtils.AllowWallJoinAtEnd(wall, 1)
             except: pass
     else:
-        # It's a cut point -> Disallow
         if WallUtils.IsWallJoinAllowedAtEnd(wall, 1):
             try: WallUtils.DisallowWallJoinAtEnd(wall, 1)
             except: pass
@@ -114,8 +118,7 @@ def get_view_tags_map(doc, view_id):
                 if ids: host_id_val = ids[0].IntegerValue
             elif hasattr(tag, "TaggedLocalElementId"): 
                 host_id_val = tag.TaggedLocalElementId.IntegerValue
-        except:
-            pass 
+        except: pass 
         if host_id_val:
             if host_id_val not in tag_map: tag_map[host_id_val] = []
             tag_map[host_id_val].append(tag)
@@ -128,7 +131,8 @@ def get_insert_snapshot(wall, tag_map):
         el = doc.GetElement(id)
         if el and isinstance(el.Location, LocationPoint):
             pt = el.Location.Point
-            key = "{:.4f},{:.4f},{:.4f}".format(pt.X, pt.Y, pt.Z)
+            # Use 2D coords for key to be safe with height variations
+            key = "{:.4f},{:.4f}".format(pt.X, pt.Y)
             p_mark = el.get_Parameter(BuiltInParameter.ALL_MODEL_MARK)
             mark_val = p_mark.AsString() if p_mark else None
             tags_data = []
@@ -137,7 +141,7 @@ def get_insert_snapshot(wall, tag_map):
                     t_info = { 'TypeId': t.GetTypeId(), 'HeadPos': t.TagHeadPosition, 
                                'Orientation': t.TagOrientation, 'HasLeader': t.HasLeader }
                     tags_data.append(t_info)
-            snapshot[key] = { 'Mark': mark_val, 'Tags': tags_data }
+            snapshot[key] = { 'Mark': mark_val, 'Tags': tags_data, 'OrigId': id }
     return snapshot
 
 def restore_inserts_data(doc, wall, snapshot, view):
@@ -154,21 +158,26 @@ def restore_inserts_data(doc, wall, snapshot, view):
         result = wall_curve.Project(pt)
         
         is_on_segment = False
-        if result and pt.DistanceTo(result.XYZPoint) < 0.00328:
-            is_on_segment = True
+        if result:
+            # FIX: Use 2D Distance (XY only) to ignore Sill Height Z-offset
+            res_pt = result.XYZPoint
+            dist_2d = math.sqrt( (pt.X - res_pt.X)**2 + (pt.Y - res_pt.Y)**2 )
+            
+            if dist_2d < 0.00328: # ~1mm tolerance in plan view
+                is_on_segment = True
         
         if is_on_segment:
-            key = "{:.4f},{:.4f},{:.4f}".format(pt.X, pt.Y, pt.Z)
+            # FIX: Key uses 2D coords
+            key = "{:.4f},{:.4f}".format(pt.X, pt.Y)
+            
             if key in snapshot:
                 data = snapshot[key]
-                # Restore Mark
                 if data['Mark']:
                     p_mark = insert.get_Parameter(BuiltInParameter.ALL_MODEL_MARK)
                     if p_mark:
                         try:
                             if p_mark.AsString() != data['Mark']: p_mark.Set(data['Mark'])
                         except: pass
-                # Restore Tags
                 if data['Tags'] and insert.Id != data.get('OrigId', ElementId.InvalidElementId):
                     for t_info in data['Tags']:
                         try:
@@ -183,13 +192,24 @@ def restore_inserts_data(doc, wall, snapshot, view):
         try: doc.Delete(List[ElementId](inserts_to_delete))
         except: pass
 
+def ensure_sketch_plane(doc, view, level_id):
+    if view.SketchPlane: return view.SketchPlane
+    level = doc.GetElement(level_id)
+    elev = level.Elevation
+    plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, XYZ(0, 0, elev))
+    sketch_plane = SketchPlane.Create(doc, plane)
+    return sketch_plane
+
 # ------------------------------------- EXECUTION
 
 with Transaction(doc, "Split Wall At Column") as t:
     t.Start()
     
+    fail_opt = t.GetFailureHandlingOptions()
+    fail_opt.SetFailuresPreprocessor(WarningSwallower())
+    t.SetFailureHandlingOptions(fail_opt)
+    
     view = doc.ActiveView
-    sketch_plane = view.SketchPlane
     global_tag_map = get_view_tags_map(doc, view.Id)
     walls_to_process = list(walls)
 
@@ -199,8 +219,9 @@ with Transaction(doc, "Split Wall At Column") as t:
         w_curve_orig = wall.Location.Curve
         p_start_anchor = w_curve_orig.GetEndPoint(0)
         p_end_anchor   = w_curve_orig.GetEndPoint(1)
+        level_id = wall.LevelId
         
-        # 1. SNAPSHOT
+        # 1. SNAPSHOT (Using 2D Keys)
         master_snapshot = get_insert_snapshot(wall, global_tag_map)
         
         # 2. FIND GAPS
@@ -243,9 +264,9 @@ with Transaction(doc, "Split Wall At Column") as t:
         gap_flags = []
         for g_s, g_e in merged_gaps:
             points_chain.append(g_s)
-            gap_flags.append(False) # Wall
+            gap_flags.append(False) 
             points_chain.append(g_e)
-            gap_flags.append(True)  # Gap
+            gap_flags.append(True)  
         points_chain.append(p_end_anchor)
         gap_flags.append(False)
 
@@ -259,7 +280,16 @@ with Transaction(doc, "Split Wall At Column") as t:
 
         if len(wall_segments) < 1: continue
 
-        # 5. COPIES
+        # 5. ASSIGN ORIGINAL (LONGEST) vs COPIES
+        longest_idx = 0
+        max_len = -1.0
+        for i, (p1, p2) in enumerate(wall_segments):
+            length = p1.DistanceTo(p2)
+            if length > max_len:
+                max_len = length
+                longest_idx = i
+                
+        walls_to_update = []
         copies_needed = len(wall_segments) - 1
         created_copies = []
         if copies_needed > 0:
@@ -268,37 +298,37 @@ with Transaction(doc, "Split Wall At Column") as t:
                     c_ids = ElementTransformUtils.CopyElement(doc, wall.Id, XYZ.Zero)
                     created_copies.append(doc.GetElement(c_ids[0]))
             except: pass
+            
+        copy_iter = iter(created_copies)
         
-        # 6. ASSIGN
-        walls_to_update = []
-        walls_to_update.append((wall, wall_segments[0]))
-        for i, cp in enumerate(created_copies):
-            if i+1 < len(wall_segments):
-                walls_to_update.append((cp, wall_segments[i+1]))
+        for i, segment_coords in enumerate(wall_segments):
+            if i == longest_idx:
+                walls_to_update.append((wall, segment_coords))
+            else:
+                try: walls_to_update.append((next(copy_iter), segment_coords))
+                except: pass
 
-        # 7. UPDATE GEOMETRY & JOINS
+        # 6. UPDATE
         for w_obj, (p1, p2) in walls_to_update:
             try:
-                # Geometry
                 new_curve = Line.CreateBound(p1, p2)
                 w_obj.Location.Curve = new_curve
                 
-                # JOINS (New Geometric Logic)
-                # We check: Is p1 the Original Start? Is p2 the Original End?
                 manage_wall_joins_geometric(w_obj, p1, p2, p_start_anchor, p_end_anchor)
-
-                # Data
                 restore_inserts_data(doc, w_obj, master_snapshot, view)
             except Exception as e:
                 print("Error: {}".format(e))
 
-        # 8. ROOM SEPARATION
-        for gs, ge in gap_segments:
+        # 7. SEPARATION LINES
+        if gap_segments:
             try:
-                gap_line = Line.CreateBound(gs, ge)
-                c_array = CurveArray()
-                c_array.Append(gap_line)
-                doc.Create.NewRoomBoundaryLines(sketch_plane, c_array, view)
-            except: pass
+                target_sketch_plane = ensure_sketch_plane(doc, view, level_id)
+                for gs, ge in gap_segments:
+                    gap_line = Line.CreateBound(gs, ge)
+                    c_array = CurveArray()
+                    c_array.Append(gap_line)
+                    doc.Create.NewRoomBoundaryLines(target_sketch_plane, c_array, view)
+            except Exception as e:
+                print("Sep Line Error: {}".format(e))
 
     t.Commit()
