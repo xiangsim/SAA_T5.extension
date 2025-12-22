@@ -331,4 +331,4 @@ with Transaction(doc, "Split Wall At Column") as t:
             except Exception as e:
                 print("Sep Line Error: {}".format(e))
 
-    t.Commit()
+    t.Commit()  

@@ -1,40 +1,35 @@
 # -*- coding: utf-8 -*-
 __title__ = "Merge\nClouds"
 __author__ = "JK_Sim"
-__doc__ = """Version 1.0
-Date: 18.11.2025
+__doc__ = """Version 1.2
+Date: 22.12.2025
 _____________________________________________________________________
 Description:
-Merge selected Revision Clouds into one cloud.
-_____________________________________________________________________
-How-to:
-
--> Select element(s)
--> Run this script
--> Done
-_________
+Merge selected Revision Clouds into one cloud and input custom ID.
+If input is empty, the comment from the first selected cloud is used.
 _____________________________________________________________________
 """
+
 import clr, math
 from Autodesk.Revit.DB import *
+from pyrevit import forms
 from System.Collections.Generic import List
 
 # ---------------------------------------------------------
-# MUST BE AT TOP (your error came from missing this earlier)
+# INITIALIZATION
 # ---------------------------------------------------------
-doc  = __revit__.ActiveUIDocument.Document
+doc   = __revit__.ActiveUIDocument.Document
 uidoc = __revit__.ActiveUIDocument
 
 MM_TO_FT = 1.0 / 304.8
 THICKNESS = 10 * MM_TO_FT
 
-
 # ---------------------------------------------------------
-# UTILITIES FROM YOUR v2.8 SCRIPT
+# UTILITIES
 # ---------------------------------------------------------
 
 def reverse_if_needed(loop):
-    """Ensure CCW orientation (your v2.8 logic)."""
+    """Ensure CCW orientation."""
     pts = []
     it = loop.GetCurveLoopIterator()
     while it.MoveNext():
@@ -49,8 +44,6 @@ def reverse_if_needed(loop):
         for i in range(len(pts))
     ) * 0.5
 
-    # Your v2.8 rule:
-    # If clockwise (area >= 0) → reverse
     if area >= 0:
         rev = CurveLoop()
         curves = []
@@ -62,7 +55,6 @@ def reverse_if_needed(loop):
         return rev
 
     return loop
-
 
 def loop_to_wafer(cl):
     """Extrude flattened loop upward."""
@@ -76,7 +68,6 @@ def loop_to_wafer(cl):
     return GeometryCreationUtilities.CreateExtrusionGeometry(
         [flat], XYZ.BasisZ, THICKNESS)
 
-
 def boolean_union(solids):
     merged = solids[0]
     for s in solids[1:]:
@@ -84,9 +75,7 @@ def boolean_union(solids):
             merged, s, BooleanOperationsType.Union)
     return merged
 
-
 def get_top_face(s):
-    """Pick top planar face, Z>0.9 (same rule as v2.8)."""
     faces = [f for f in s.Faces
              if isinstance(f, PlanarFace) and f.FaceNormal.Z > 0.9]
     if not faces:
@@ -94,15 +83,11 @@ def get_top_face(s):
     faces.sort(key=lambda x: x.Area, reverse=True)
     return faces[0]
 
-
 def pick_outer_loop(face):
-    """Select loop with largest perimeter."""
     loops = list(face.GetEdgesAsCurveLoops())
     if not loops:
         return None
-    if len(loops) == 1:
-        return loops[0]
-
+    
     def perim(cl):
         L = 0.0
         it = cl.GetCurveLoopIterator()
@@ -111,11 +96,6 @@ def pick_outer_loop(face):
         return L
 
     return max(loops, key=perim)
-
-
-# ---------------------------------------------------------
-# GET SKETCH CURVES → REBUILD CLOSED LOOPS
-# ---------------------------------------------------------
 
 def get_cloud_loops(cloud):
     curves = list(cloud.GetSketchCurves())
@@ -164,7 +144,6 @@ def get_cloud_loops(cloud):
 
     return loops
 
-
 # ---------------------------------------------------------
 # MAIN EXECUTION
 # ---------------------------------------------------------
@@ -173,28 +152,39 @@ selection = [doc.GetElement(id) for id in uidoc.Selection.GetElementIds()]
 clouds = [c for c in selection if isinstance(c, RevisionCloud)]
 
 if len(clouds) < 2:
+    forms.alert("Please select at least 2 revision clouds to merge.", title="Selection Error")
     raise Exception("Select at least 2 revision clouds.")
 
+# --- Logic for Fallback Comment ---
+first_cloud = clouds[0]
+p_first = first_cloud.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
+fallback_comment = p_first.AsString() if p_first else ""
+
+user_comment = forms.ask_for_string(
+    default="",
+    prompt="Please input ID number from T5 Change Register (Optional)",
+    title="Merged Cloud Comments"
+)
+
+# Determine the final string to apply
+final_comment = user_comment if user_comment else fallback_comment
+
 view = doc.ActiveView
-revision_id = clouds[0].RevisionId  # assume same revision type
-
-
-# ---- Build wafers ---------------------------------------------------
+revision_id = clouds[0].RevisionId 
 
 wafers = []
 for cloud in clouds:
-    loops = get_cloud_loops(cloud)
-    for cl in loops:
-        wafers.append(loop_to_wafer(cl))
+    try:
+        loops = get_cloud_loops(cloud)
+        for cl in loops:
+            wafers.append(loop_to_wafer(cl))
+    except:
+        continue
 
-
-# ---- Boolean merge --------------------------------------------------
+if not wafers:
+    raise Exception("Could not extract geometry from selected clouds.")
 
 merged = boolean_union(wafers)
-
-
-# ---- Extract cleaned outer boundary --------------------------------
-
 top = get_top_face(merged)
 if not top:
     raise Exception("Top face not found.")
@@ -203,35 +193,25 @@ outer = pick_outer_loop(top)
 if not outer:
     raise Exception("Could not determine outer loop.")
 
-outer = reverse_if_needed(outer)   # FIX ORIENTATION HERE
-
-
-# ---- Flatten loop → IList[Curve] ------------------------------------
+outer = reverse_if_needed(outer) 
 
 curves = List[Curve]()
 it = outer.GetCurveLoopIterator()
 while it.MoveNext():
     curves.Add(it.Current)
 
-
-# ---- Create new merged cloud ---------------------------------------
-
 with Transaction(doc, "Merge Revision Clouds") as t:
     t.Start()
 
     new_cloud = RevisionCloud.Create(doc, view, revision_id, curves)
 
-    # Add SAA to Comments
     try:
-        p = new_cloud.LookupParameter("Comments")
-        if p and not p.IsReadOnly:
-            p.Set("SAA")
-        else:
-            new_cloud.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS).Set("SAA")
+        p_new = new_cloud.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
+        if p_new and not p_new.IsReadOnly:
+            p_new.Set(final_comment if final_comment else "")
     except:
         pass
 
-    # Remove original clouds
     for c in clouds:
         doc.Delete(c.Id)
 
