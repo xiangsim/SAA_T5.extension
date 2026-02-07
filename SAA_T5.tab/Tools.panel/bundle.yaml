@@ -4,3 +4,4 @@ layout:
   - StraightenWall
   - SplitWallAtColumn
   - TransferSingle
+  - CreatePrintSet
