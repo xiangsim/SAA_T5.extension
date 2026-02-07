@@ -203,53 +203,34 @@ with Transaction(doc, "Create Print Set from Schedule") as t:
         print_manager.PrintRange = PrintRange.Select
         view_sheet_setting = print_manager.ViewSheetSetting
         
-        # DEBUG: What is CurrentViewSheetSet pointing to?
-        current_set = view_sheet_setting.CurrentViewSheetSet
-        debug_msg = "CurrentViewSheetSet BEFORE setting InSession:\n"
-        if current_set.Id.IntegerValue == -1:
-            debug_msg += "- Points to: <In-Session> (temp)\n"
-        else:
-            for name, vs in existing_sets_now.items():
-                if vs.Id == current_set.Id:
-                    debug_msg += "- Points to: '{0}' (ID: {1}, {2} sheets)\n".format(name, current_set.Id.IntegerValue, current_set.Views.Size)
-                    break
-        
         # Create ViewSet with our sheets
         view_set = ViewSet()
         for sheet in sheets:
             view_set.Insert(sheet)
         
-        # CRITICAL: Set CurrentViewSheetSet.Views directly (NOT CurrentViewSheetSet itself)
-        # This works because CurrentViewSheetSet is already pointing to InSession by default
+        # CRITICAL: Set CurrentViewSheetSet.Views directly
+        # This modifies whatever print set CurrentViewSheetSet is pointing to
+        # (usually the last created/selected print set)
         view_sheet_setting.CurrentViewSheetSet.Views = view_set
         
-        # DEBUG: Verify what happened
-        debug_msg += "\nAfter setting CurrentViewSheetSet.Views:\n"
-        debug_msg += "- CurrentViewSheetSet.Views.Size: {0}\n".format(view_sheet_setting.CurrentViewSheetSet.Views.Size)
-        debug_msg += "- InSession.Views.Size: {0}\n".format(view_sheet_setting.InSession.Views.Size)
+        # Try setting IsAutomatic before SaveAs
+        try:
+            view_sheet_setting.CurrentViewSheetSet.IsAutomatic = True
+        except:
+            pass
         
-        debug_msg += "\nAbout to call SaveAs('{0}')...\n".format(print_set_name)
-        forms.alert(debug_msg, title="Debug Before SaveAs")
-        
-        # Save as new print set
+        # Save as new print set with our desired name
         view_sheet_setting.SaveAs(print_set_name)
         
-        # Set IsAutomatic = True (user will set organization manually)
+        # Set IsAutomatic = True after SaveAs
         try:
-            # Get the saved print set
             saved_set_collection = FilteredElementCollector(doc).OfClass(ViewSheetSet)
-            saved_set = None
             for vs in saved_set_collection:
                 if vs.Name == print_set_name:
-                    saved_set = vs
+                    vs.IsAutomatic = True
                     break
-            
-            if saved_set:
-                # Set IsAutomatic = True
-                saved_set.IsAutomatic = True
-                
-        except Exception as ex:
-            forms.alert("Error setting IsAutomatic: {0}".format(str(ex)), title="Error")
+        except:
+            pass
         
         t.Commit()
         
